@@ -1,7 +1,7 @@
 # poolShark
 
 AR pool-shot assistant for camera-equipped recording glasses.
-Built with **Qt 5.12** and **OpenCV 4** (C++11/14).
+Built with **Qt 5.12** and **OpenCV 4** (C++14).
 
 ## Colour classification (current)
 
@@ -19,10 +19,29 @@ Reset the tracker after large lighting changes.
 ## Build
 
 ```bash
-qmake poolShark.pro && make
+# Point OPENCV_DIR at your OpenCV install, then:
+qmake poolShark.pro
+make          # or nmake / mingw32-make on Windows
 ```
 
-Adjust `INCLUDEPATH` / `LIBS` in `poolShark.pro` for your OpenCV install.
+On Windows with the official OpenCV package:
+
+```bat
+set OPENCV_DIR=C:\opencv\build
+qmake poolShark.pro
+nmake
+```
+
+Adjust the `opencv_world412` lib name in `poolShark.pro` if your OpenCV version differs.
+
+## Tests
+
+Synthetic colour-classifier regression (Python + OpenCV, no Qt required):
+
+```bash
+py -3 -m pip install opencv-python-headless numpy
+py -3 tests/test_colour_classifier.py
+```
 
 ## WIP
 
