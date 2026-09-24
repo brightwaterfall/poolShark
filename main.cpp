@@ -126,7 +126,9 @@ static const char *ballColorName(BallColor c)
     static const char *n[] = {
         "CUE","YELLOW","BLUE","RED","PURPLE","ORANGE","GREEN","MAROON","BLACK","?"
     };
-    return n[(int)c < (int)BC_COUNT ? (int)c : (int)BC_UNKNOWN];
+    int i = (int)c;
+    if (i < 0 || i >= (int)BC_COUNT) i = (int)BC_UNKNOWN;
+    return n[i];
 }
 
 static cv::Scalar ballColorBgr(BallColor c)
@@ -198,7 +200,7 @@ static float hueDist(float a, float b)
 /* Robust interior sample: ring mask, drop specular / shadow / felt bleed. */
 static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
                                    cv::Point2f c, float r,
-                                   const cv::Mat &tableMask)
+                                   float feltH, bool haveFelt)
 {
     using namespace cv;
     ColorSample out;
@@ -209,18 +211,6 @@ static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
     int x1 = std::min(hsv.cols - 1, (int)std::ceil(c.x + r + 1));
     int y1 = std::min(hsv.rows - 1, (int)std::ceil(c.y + r + 1));
     if (x1 - x0 < 3 || y1 - y0 < 3) return out;
-
-    /* Dominant felt hue (for bleed rejection near the rim). */
-    float feltH = 55.f;
-    bool haveFelt = false;
-    if (!tableMask.empty()) {
-        Mat er; erode(tableMask, er, getStructuringElement(MORPH_ELLIPSE, Size(21, 21)));
-        if (countNonZero(er) > 500) {
-            Scalar fm = mean(hsv, er);
-            feltH = (float)fm[0];
-            haveFelt = true;
-        }
-    }
 
     const float rIn  = r * 0.22f;
     const float rOut = r * 0.70f;
@@ -372,9 +362,14 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
             if (V < 100 || L < 95.f) bestId = BC_MAROON;
             else bestId = BC_RED;
         } else if (H < 18) {
-            bestId = (V > 160 && L > 150.f) ? BC_YELLOW : BC_ORANGE;
-            if (H < 12 && L < 160.f) bestId = BC_ORANGE;
-        } else if (H < 36) {
+            /* Orange lives here; do NOT promote bright samples to yellow. */
+            bestId = BC_ORANGE;
+            /* Only very high-L + low a* at the yellow edge → yellow. */
+            if (H >= 15 && L > 190.f && a < 18.f) bestId = BC_YELLOW;
+        } else if (H < 24) {
+            /* Yellow/orange border — Lab a* separates them. */
+            bestId = (a > 28.f || L < 155.f) ? BC_ORANGE : BC_YELLOW;
+        } else if (H < 38) {
             bestId = BC_YELLOW;
         } else if (H < 88) {
             bestId = BC_GREEN;
@@ -526,6 +521,8 @@ struct Analysis
     std::vector<cv::Point>     tableContour;
     cv::Point2f                tableCenter;
     cv::Point2f                shift;        // estimated head motion / frame
+    float                      feltHue = 55.f;
+    bool                       haveFeltHue = false;
     std::vector<BallDet>       ballDets;
     std::vector<BallTrack>     tracks;
     int                        cueBallIdx = -1;
@@ -567,7 +564,7 @@ void PoolEngine::process(const cv::Mat &frameIn, const Params &p, Analysis &A)
     using namespace cv;
     if (frameIn.empty()) return;
 
-    Mat frame = frameIn;
+    Mat frame = frameIn.clone();
     if (p.flip) flip(frame, frame, 1);
     if (frame.cols > p.maxWidth) {
         double s = (double)p.maxWidth / frame.cols;
@@ -635,10 +632,20 @@ void PoolEngine::detectTable(const cv::Mat &hsv, Analysis &A)
         A.tableCenter = (mu.m00 > 0)
             ? Point2f((float)(mu.m10 / mu.m00), (float)(mu.m01 / mu.m00))
             : Point2f(m.cols / 2.f, m.rows / 2.f);
+        Mat feltCore;
+        erode(A.tableMask, feltCore, getStructuringElement(MORPH_ELLIPSE, Size(21, 21)));
+        if (countNonZero(feltCore) > 500) {
+            Scalar fm = mean(hsv, feltCore);
+            A.feltHue = (float)fm[0];
+            A.haveFeltHue = true;
+        } else {
+            A.haveFeltHue = false;
+        }
     } else {
         A.tableMask = Mat(m.size(), CV_8U, Scalar(255)); // fallback: whole frame
         A.tableContour.clear();
         A.tableCenter = Point2f(m.cols / 2.f, m.rows / 2.f);
+        A.haveFeltHue = false;
     }
     dilate(A.tableMask, A.tableMaskD, getStructuringElement(MORPH_ELLIPSE, Size(25,25)));
 }
@@ -716,7 +723,7 @@ void PoolEngine::detectBalls(const cv::Mat &hsv, const cv::Mat &lab,
     auto tryAdd = [&](Point2f cc, float r, double fill) {
         if (r < rmin || r > rmax) return;
         if (fill < 0.48 || fill > 1.15) return;
-        ColorSample samp = sampleBallColor(hsv, lab, cc, r, A.tableMask);
+        ColorSample samp = sampleBallColor(hsv, lab, cc, r, A.feltHue, A.haveFeltHue);
         if (!samp.ok) return;
         BallDet d;
         d.c = cc; d.r = r; d.fill = (float)fill;

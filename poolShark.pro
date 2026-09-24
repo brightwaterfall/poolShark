@@ -1,15 +1,42 @@
 QT       += widgets
-TARGET    = sentry
+TARGET    = poolShark
 TEMPLATE  = app
 CONFIG   += c++14
 
-INCLUDEPATH += /Users/macbook2015/Downloads/opencv-4.x/modules/video/include /Users/macbook2015/Downloads/opencv-4.x/modules/stitching/include /Users/macbook2015/Downloads/opencv-4.x/modules/photo/include /Users/macbook2015/Downloads/opencv-4.x/modules/objdetect/include /Users/macbook2015/Downloads/opencv-4.x/modules/ml/include /Users/macbook2015/Downloads/opencv-4.x/modules/imgproc/include /Users/macbook2015/Downloads/opencv-4.x/modules/videoio/include /Users/macbook2015/Downloads/opencv-4.x/modules/imgcodecs/include /Users/macbook2015/Downloads/opencv-4.x/modules/highgui/include /Users/macbook2015/Downloads/opencv-4.x/modules/dnn/include /Users/macbook2015/Downloads/opencv-4.x/modules/flann/include /Users/macbook2015/Downloads/opencv-4.x/modules/features2d/include /Users/macbook2015/Downloads/opencv-4.x/modules/calib3d/include /Users/macbook2015/Downloads/opencv-4.x/modules/core/include /usr/include/opencv4 /Users/macbook2015/Downloads/opencv-4.x/include  /Users/macbook2015/Downloads/opencv-4.x/build # adjust if needed (e.g. /usr/local/include)
-LIBS        += -L/Users/macbook2015/Downloads/opencv-4.x/build/lib -lopencv_core -lopencv_imgproc -lopencv_videoio -lopencv_highgui -lopencv_video
+# Portable OpenCV paths:
+#   Windows: set OPENCV_DIR to your OpenCV build (contains include/ and lib/ or x64/vc15/lib)
+#   macOS/Linux: set OPENCV_DIR, or rely on pkg-config / system includes below.
+isEmpty(OPENCV_DIR) {
+    OPENCV_DIR = $$(OPENCV_DIR)
+}
 
+!isEmpty(OPENCV_DIR) {
+    INCLUDEPATH += $$OPENCV_DIR/include
+    INCLUDEPATH += $$OPENCV_DIR/include/opencv4
+    win32 {
+        # Official OpenCV Windows packages use x64/vc15|vc16|vc17/lib
+        LIBS += -L$$OPENCV_DIR/x64/vc17/lib
+        LIBS += -L$$OPENCV_DIR/x64/vc16/lib
+        LIBS += -L$$OPENCV_DIR/x64/vc15/lib
+        LIBS += -L$$OPENCV_DIR/lib
+        CONFIG(debug, debug|release) {
+            LIBS += -lopencv_world412d
+        } else {
+            LIBS += -lopencv_world412
+        }
+        # Fallback names if world lib version differs — uncomment/adjust:
+        # LIBS += -lopencv_core -lopencv_imgproc -lopencv_video -lopencv_videoio
+    } else {
+        LIBS += -L$$OPENCV_DIR/lib -L$$OPENCV_DIR/build/lib
+        LIBS += -lopencv_core -lopencv_imgproc -lopencv_video -lopencv_videoio
+    }
+} else:unix {
+    # System packages (Debian/Ubuntu/Homebrew opencv4)
+    INCLUDEPATH += /usr/include/opencv4 /usr/local/include/opencv4
+    LIBS += -lopencv_core -lopencv_imgproc -lopencv_video -lopencv_videoio
+}
 
-#LIBS += -L/usr/lib/x86_64-linux-gnu/ -lopencv_calib3d
-#LIBS += -lopencv_core -lopencv_dnn -lopencv_features2d -lopencv_flann -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc -lopencv_ml
-#LIBS += -lopencv_objdetect -lopencv_photo -lopencv_shape -lopencv_stitching -lopencv_superres -lopencv_video
-#LIBS += -lopencv_videoio -lopencv_videostab
+# Optional: avoid linking highgui (can conflict with Qt on some builds)
+# LIBS += -lopencv_highgui
 
 SOURCES += main.cpp
