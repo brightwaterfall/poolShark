@@ -12,9 +12,10 @@ Ball colours are no longer a single HSV average. The pipeline now:
 3. **Lab + HSV prototypes** — nearest Lab `a*b*` prototype with HSV tie-breaks for warm hues (yellow/orange/red/maroon)
 4. **Stripe detection** — white-band fraction → labels like `YELLOW/s`
 5. **Temporal lock** — majority vote over ~9 frames, then lock until sustained disagreement
-6. **Extra detection** — Lab distance from felt + Hough circles so green balls are not lost in the cloth
+6. **Pairwise disambiguation + lock breakers** — corrects sticky cue/yellow, orange/yellow, red/maroon, blue/purple, black/maroon, and weak green/felt mix-ups
+7. **Extra detection** — Lab distance from felt + Hough circles so green balls are not lost in the cloth
 
-Reset the tracker after large lighting changes.
+Reset the tracker after large lighting changes (or after updating the binary).
 
 ## Build
 

@@ -286,6 +286,21 @@ static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
         return out;
     }
 
+    /* If we have enough saturated pixels, median only those (cleaner hue). */
+    {
+        std::vector<float> Hs2, Ss2, Vs2, Ls2, As2, Bs2;
+        for (size_t i = 0; i < Ss.size(); ++i) {
+            if (Ss[i] >= 40.f) {
+                Hs2.push_back(Hs[i]); Ss2.push_back(Ss[i]); Vs2.push_back(Vs[i]);
+                Ls2.push_back(Ls[i]); As2.push_back(As[i]); Bs2.push_back(Bs[i]);
+            }
+        }
+        if (Hs2.size() >= 8) {
+            Hs.swap(Hs2); Ss.swap(Ss2); Vs.swap(Vs2);
+            Ls.swap(Ls2); As.swap(As2); Bs.swap(Bs2);
+        }
+    }
+
     auto med = [](std::vector<float> &v) -> float {
         size_t n = v.size() / 2;
         std::nth_element(v.begin(), v.begin() + n, v.end());
@@ -317,7 +332,64 @@ static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
     return out;
 }
 
-/* Lab a*b* prototypes (OpenCV 0..255, neutral at 128) + HSV tie-break. */
+/* Fix pairwise mix-ups that raw prototypes commonly make under table lights. */
+static BallColor disambiguateColor(BallColor c, const ColorSample &s)
+{
+    const float L = s.lab[0];
+    const float a = s.lab[1] - 128.f;
+    const float b = s.lab[2] - 128.f;
+    const int H = s.hsv[0], S = s.hsv[1], V = s.hsv[2];
+
+    /* CUE vs anything chromatic */
+    if (c == BC_CUE) {
+        if (b > 18.f && L > 110.f && (S >= 25 || s.chroma >= 14.f) &&
+            H >= 8 && H <= 42 && a > -22.f)
+            return (H < 16 && a > 28.f) ? BC_ORANGE : BC_YELLOW;
+        if (S >= 55 && V >= 70) {
+            if (H <= 8 || H >= 170) return (L < 95.f) ? BC_MAROON : BC_RED;
+            if (H < 18) return BC_ORANGE;
+            if (H < 42) return BC_YELLOW;
+            if (H < 88) return BC_GREEN;
+            if (H < 128) return BC_BLUE;
+            if (H < 165) return BC_PURPLE;
+        }
+        if (s.chroma > 16.f || std::fabs(a) > 18.f || std::fabs(b) > 18.f)
+            return BC_UNKNOWN;
+    }
+
+    /* YELLOW <-> ORANGE / RED */
+    if (c == BC_YELLOW) {
+        if (H < 8 || H >= 170) return (L < 95.f) ? BC_MAROON : BC_RED;
+        if (H >= 8 && H < 16 && a > 25.f) return BC_ORANGE;
+        if (H >= 45 && H < 90 && a < -20.f) return BC_GREEN;
+        if (S < 30 && std::fabs(b) < 16.f && L > 160.f && s.chroma < 14.f)
+            return BC_CUE;
+    }
+    if (c == BC_ORANGE) {
+        if (H >= 20 && a < 22.f && b > 35.f) return BC_YELLOW;
+        if ((H <= 5 || H >= 172) && a > 35.f) return (L < 95.f) ? BC_MAROON : BC_RED;
+    }
+
+    /* RED <-> MAROON */
+    if (c == BC_RED && (L < 88.f || V < 105.f)) return BC_MAROON;
+    if (c == BC_MAROON && L > 105.f && V > 140.f && S >= 70) return BC_RED;
+
+    /* BLUE <-> PURPLE */
+    if (c == BC_BLUE && (H >= 132 || (H >= 125 && a > 20.f))) return BC_PURPLE;
+    if (c == BC_PURPLE && H < 118 && b < -35.f && a < 25.f) return BC_BLUE;
+
+    /* BLACK <-> MAROON */
+    if (c == BC_BLACK && s.chroma > 24.f && a > 12.f) return BC_MAROON;
+    if (c == BC_MAROON && s.chroma < 14.f && L < 48.f && S < 60) return BC_BLACK;
+
+    /* GREEN: reject weak felt-like samples */
+    if (c == BC_GREEN && S < 40 && L > 140.f && s.chroma < 18.f)
+        return BC_UNKNOWN;
+
+    return c;
+}
+
+/* Lab a*b* prototypes + HSV tie-break + disambiguation. */
 static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
 {
     isStripe = false;
@@ -328,36 +400,37 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
     const float b = s.lab[2] - 128.f;
     const int H = s.hsv[0], S = s.hsv[1], V = s.hsv[2];
 
-    /* Strong yellow signal in Lab b* / hue — never call this the cue ball. */
+    /* Hue-gated signals — Lab alone confuses green/red with yellow. */
     const bool yellowSignal =
-        (b > 20.f && L > 110.f && s.chroma >= 14.f) ||
-        (S >= 35 && H >= 14 && H <= 42 && V >= 90) ||
-        (S >= 28 && H >= 18 && H <= 38 && b > 15.f);
+        (S >= 35 && H >= 18 && H <= 40 && V >= 90) ||
+        (b > 28.f && a > -22.f && a < 22.f && L > 130.f &&
+         H >= 16 && H <= 40 && s.chroma >= 16.f);
 
-    /* Cue must be near-neutral in Lab — strict gates so washed yellow ≠ white. */
-    if (!yellowSignal) {
+    const bool orangeSignal =
+        (S >= 50 && H >= 8 && H < 18 && V >= 80) ||
+        (a > 28.f && b > 22.f && b < 60.f && L > 90.f && L < 185.f &&
+         H >= 8 && H < 18);
+
+    if (!yellowSignal && !orangeSignal) {
         if (s.chroma < 12.f && L >= 160.f && S <= 42 &&
             std::fabs(a) < 14.f && std::fabs(b) < 16.f)
-            return BC_CUE;
+            return disambiguateColor(BC_CUE, s);
         if (s.whiteFrac > 0.62f && s.chromaFrac < 0.12f && L >= 155.f &&
-            s.chroma < 12.f && std::fabs(b) < 16.f)
-            return BC_CUE;
+            s.chroma < 12.f && std::fabs(b) < 16.f && std::fabs(a) < 14.f)
+            return disambiguateColor(BC_CUE, s);
     }
 
-    if (L <= 55.f && s.chroma < 22.f) return BC_BLACK;
-    if (V <= 70 && S <= 90 && s.chroma < 28.f && !yellowSignal) return BC_BLACK;
+    if (L <= 50.f && s.chroma < 20.f) return disambiguateColor(BC_BLACK, s);
+    if (V <= 65 && S <= 80 && s.chroma < 24.f && !yellowSignal && !orangeSignal)
+        return disambiguateColor(BC_BLACK, s);
 
-    /* Stripe: notable white band + chromatic body. */
     isStripe = (s.whiteFrac >= 0.16f && s.chromaFrac >= 0.22f && s.chroma > 20.f);
 
-    /* Early yellow commit when Lab/HSV clearly say yellow. */
-    if (yellowSignal && b > 18.f) {
-        if (!(H < 16 && a > 30.f && b < 45.f))
-            return BC_YELLOW;
-    }
+    if (orangeSignal) return disambiguateColor(BC_ORANGE, s);
+    if (yellowSignal && b > 18.f && H >= 16)
+        return disambiguateColor(BC_YELLOW, s);
 
     struct Proto { BallColor id; float aa, bb, L; float h; };
-    /* Tuned for typical billiard plastics under warm room light. */
     static const Proto protos[] = {
         { BC_YELLOW, -12.f,  62.f, 180.f,  28.f },
         { BC_ORANGE,  38.f,  52.f, 150.f,  14.f },
@@ -373,28 +446,25 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
         float da = a - p.aa, db = b - p.bb, dL = (L - p.L) * 0.25f;
         float dLab = da * da + db * db + dL * dL;
         float dH = hueDist((float)H, p.h);
-        /* Soft HSV vote — helps orange/yellow and red/maroon under weird WB. */
         float cost = dLab + 0.35f * dH * dH;
-        if (S < 50) cost += 80.f;   /* desaturated → less trust in hue protos */
-        /* Prefer yellow proto when Lab b* is elevated. */
+        if (S < 50) cost += 80.f;
         if (p.id == BC_YELLOW && b > 25.f) cost *= 0.55f;
+        if (p.id == BC_ORANGE && a > 25.f && H < 18) cost *= 0.65f;
+        if (p.id == BC_MAROON && L < 90.f && (H <= 8 || H >= 170)) cost *= 0.70f;
+        if (p.id == BC_BLUE && H >= 95 && H < 125 && b < -30.f) cost *= 0.70f;
+        if (p.id == BC_PURPLE && H >= 130 && H < 165) cost *= 0.70f;
         if (cost < best) { best = cost; bestId = p.id; }
     }
 
-    /* HSV hard overrides when Lab is ambiguous near warm hues. */
     if (S >= 45 && V >= 60) {
         if (H <= 6 || H >= 170) {
-            if (V < 100 || L < 95.f) bestId = BC_MAROON;
-            else bestId = BC_RED;
+            bestId = (V < 110 || L < 95.f) ? BC_MAROON : BC_RED;
         } else if (H < 18) {
-            /* Orange lives here; do NOT promote bright samples to yellow. */
             bestId = BC_ORANGE;
-            /* Only very high-L + low a* at the yellow edge → yellow. */
             if (H >= 15 && L > 190.f && a < 18.f) bestId = BC_YELLOW;
-            if (b > 35.f && a < 25.f) bestId = BC_YELLOW;
+            if (b > 40.f && a < 22.f && H >= 14) bestId = BC_YELLOW;
         } else if (H < 24) {
-            /* Yellow/orange border — Lab a* separates them. */
-            bestId = (a > 28.f || L < 155.f) ? BC_ORANGE : BC_YELLOW;
+            bestId = (a > 28.f && b < 50.f) ? BC_ORANGE : BC_YELLOW;
         } else if (H < 42) {
             bestId = BC_YELLOW;
         } else if (H < 88) {
@@ -406,16 +476,19 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
         }
     } else if (yellowSignal) {
         bestId = BC_YELLOW;
+    } else if (orangeSignal) {
+        bestId = BC_ORANGE;
     }
 
-    /* Desaturated leftovers: cue only if Lab is truly neutral (not yellow). */
     if (bestId == BC_UNKNOWN && S < 50) {
         if (L >= 155.f && s.chroma < 12.f && std::fabs(b) < 14.f && std::fabs(a) < 12.f)
-            return BC_CUE;
-        if (L <= 70.f) return BC_BLACK;
-        if (b > 18.f && L > 120.f) return BC_YELLOW;
+            bestId = BC_CUE;
+        else if (L <= 70.f) bestId = BC_BLACK;
+        else if (b > 18.f && L > 120.f && H >= 16 && H <= 40) bestId = BC_YELLOW;
+        else if (a > 25.f && H >= 8 && H < 20) bestId = BC_ORANGE;
     }
-    return bestId;
+
+    return disambiguateColor(bestId, s);
 }
 
 static void classifyBall(const ColorSample &s, std::string &label,
@@ -886,13 +959,61 @@ void PoolEngine::updateTracks(Analysis &A, cv::Point2f shift)
         }
 
         tk.isCue = (tk.label == "CUE");
-        /* If a lock says CUE but Lab b* still looks yellow, break the lock. */
-        if (tk.isCue && (tk.bE - 128.f) > 22.f && tk.sE >= 28.f) {
-            tk.lockedLabel.clear();
-            tk.lockHits = 0;
-            tk.label = "YELLOW";
-            tk.isCue = false;
-            tk.bgr = ballColorBgr(BC_YELLOW);
+        /* Break locks that contradict EMA Lab/HSV (common sticky errors). */
+        {
+            const float aa = tk.aE - 128.f, bb = tk.bE - 128.f;
+            const float ch = std::sqrt(aa * aa + bb * bb);
+            const float h = tk.hE;
+            std::string base = tk.label;
+            size_t slash = base.find("/s");
+            const bool wasStripe = (slash != std::string::npos);
+            if (wasStripe) base = base.substr(0, slash);
+            auto force = [&](const char *name, BallColor bc, bool cue) {
+                tk.lockedLabel.clear();
+                tk.lockHits = 0;
+                tk.label = wasStripe && !cue && bc != BC_UNKNOWN && bc != BC_BLACK
+                    ? (std::string(name) + "/s") : std::string(name);
+                tk.isCue = cue;
+                tk.bgr = ballColorBgr(bc);
+            };
+            /* Cue stuck on washed yellow / orange */
+            if (base == "CUE" && bb > 18.f && tk.sE >= 25.f &&
+                h >= 16.f && h <= 40.f && aa > -22.f)
+                force("YELLOW", BC_YELLOW, false);
+            else if (base == "CUE" && tk.sE >= 45.f && h >= 8.f && h < 16.f && aa > 22.f)
+                force("ORANGE", BC_ORANGE, false);
+            else if (base == "CUE" && (ch > 18.f || tk.sE > 55.f))
+                force("?", BC_UNKNOWN, false);
+            /* Yellow <-> orange / red / green */
+            else if (base == "YELLOW" && h >= 8.f && h < 16.f && aa > 28.f)
+                force("ORANGE", BC_ORANGE, false);
+            else if (base == "YELLOW" && (h < 8.f || h >= 170.f) && aa > 20.f)
+                force(tk.lE < 95.f ? "MAROON" : "RED",
+                      tk.lE < 95.f ? BC_MAROON : BC_RED, false);
+            else if (base == "YELLOW" && h >= 45.f && h < 90.f && aa < -20.f)
+                force("GREEN", BC_GREEN, false);
+            else if (base == "ORANGE" && h >= 22.f && aa < 20.f && bb > 35.f)
+                force("YELLOW", BC_YELLOW, false);
+            else if (base == "ORANGE" && (h <= 5.f || h >= 172.f) && aa > 35.f)
+                force(tk.lE < 95.f ? "MAROON" : "RED",
+                      tk.lE < 95.f ? BC_MAROON : BC_RED, false);
+            /* Red <-> maroon */
+            else if (base == "RED" && tk.lE < 85.f)
+                force("MAROON", BC_MAROON, false);
+            else if (base == "MAROON" && tk.lE > 110.f && tk.vE > 145.f && tk.sE >= 70.f)
+                force("RED", BC_RED, false);
+            /* Blue <-> purple */
+            else if (base == "BLUE" && h >= 132.f)
+                force("PURPLE", BC_PURPLE, false);
+            else if (base == "PURPLE" && h < 115.f && bb < -35.f)
+                force("BLUE", BC_BLUE, false);
+            /* Black <-> maroon; green felt bleed */
+            else if (base == "BLACK" && ch > 26.f && aa > 14.f)
+                force("MAROON", BC_MAROON, false);
+            else if (base == "MAROON" && ch < 14.f && tk.lE < 48.f && tk.sE < 60.f)
+                force("BLACK", BC_BLACK, false);
+            else if (base == "GREEN" && tk.sE < 40.f && tk.lE > 140.f && ch < 18.f)
+                force("?", BC_UNKNOWN, false);
         }
         tk.isStripe = (tk.label.find("/s") != std::string::npos);
         /* Paint from locked/voted name. */
