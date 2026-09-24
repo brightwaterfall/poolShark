@@ -13,7 +13,9 @@ Ball colours are no longer a single HSV average. The pipeline now:
 4. **Stripe detection** — white-band fraction → labels like `YELLOW/s`
 5. **Temporal lock** — majority vote over ~9 frames, then lock until sustained disagreement
 6. **Pairwise disambiguation + lock breakers** — corrects sticky cue/yellow, orange/yellow, red/maroon, blue/purple, black/maroon, and weak green/felt mix-ups
-7. **Extra detection** — Lab distance from felt + Hough circles so green balls are not lost in the cloth
+7. **Table-only detection** — ball centres must sit on the felt interior (ignores wall racks, rails, pens/sticks); Hough is stricter and rejects felt-texture / purple-cast ghosts
+8. **Warm-light cue** — cream cue under tungsten/LED stays `CUE` instead of red/orange/yellow
+9. **Extra detection** — Lab distance from felt + Hough circles so green balls are not lost in the cloth
 
 Reset the tracker after large lighting changes (or after updating the binary).
 
