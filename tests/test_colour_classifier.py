@@ -63,16 +63,28 @@ def classify_color_sample(s: ColorSample) -> tuple[int, bool]:
     L, a, b = s.lab[0], s.lab[1] - 128.0, s.lab[2] - 128.0
     H, S, V = s.hsv
 
-    if s.chroma < 18.0 and L >= 155.0 and S <= 70:
-        return BC_CUE, False
-    if s.white_frac > 0.55 and s.chroma_frac < 0.20 and L >= 140.0:
-        return BC_CUE, False
+    yellow_signal = (
+        (b > 20.0 and L > 110.0 and s.chroma >= 14.0)
+        or (S >= 35 and 14 <= H <= 42 and V >= 90)
+        or (S >= 28 and 18 <= H <= 38 and b > 15.0)
+    )
+
+    if not yellow_signal:
+        if s.chroma < 12.0 and L >= 160.0 and S <= 42 and abs(a) < 14.0 and abs(b) < 16.0:
+            return BC_CUE, False
+        if s.white_frac > 0.62 and s.chroma_frac < 0.12 and L >= 155.0 and s.chroma < 12.0 and abs(b) < 16.0:
+            return BC_CUE, False
+
     if L <= 55.0 and s.chroma < 22.0:
         return BC_BLACK, False
-    if V <= 70 and S <= 90 and s.chroma < 28.0:
+    if V <= 70 and S <= 90 and s.chroma < 28.0 and not yellow_signal:
         return BC_BLACK, False
 
     is_stripe = s.white_frac >= 0.16 and s.chroma_frac >= 0.22 and s.chroma > 20.0
+
+    if yellow_signal and b > 18.0:
+        if not (H < 16 and a > 30.0 and b < 45.0):
+            return BC_YELLOW, is_stripe
 
     protos = [
         (BC_YELLOW, -12.0, 62.0, 180.0, 28.0),
@@ -92,19 +104,23 @@ def classify_color_sample(s: ColorSample) -> tuple[int, bool]:
         cost = dLab + 0.35 * dH * dH
         if S < 50:
             cost += 80.0
+        if pid == BC_YELLOW and b > 25.0:
+            cost *= 0.55
         if cost < best:
             best, best_id = cost, pid
 
-    if S >= 70 and V >= 60:
+    if S >= 45 and V >= 60:
         if H <= 6 or H >= 170:
             best_id = BC_MAROON if (V < 100 or L < 95.0) else BC_RED
         elif H < 18:
             best_id = BC_ORANGE
             if H >= 15 and L > 190.0 and a < 18.0:
                 best_id = BC_YELLOW
+            if b > 35.0 and a < 25.0:
+                best_id = BC_YELLOW
         elif H < 24:
             best_id = BC_ORANGE if (a > 28.0 or L < 155.0) else BC_YELLOW
-        elif H < 38:
+        elif H < 42:
             best_id = BC_YELLOW
         elif H < 88:
             best_id = BC_GREEN
@@ -112,12 +128,16 @@ def classify_color_sample(s: ColorSample) -> tuple[int, bool]:
             best_id = BC_BLUE
         elif H < 165:
             best_id = BC_PURPLE
+    elif yellow_signal:
+        best_id = BC_YELLOW
 
-    if best_id == BC_UNKNOWN and S < 55:
-        if L >= 150.0:
+    if best_id == BC_UNKNOWN and S < 50:
+        if L >= 155.0 and s.chroma < 12.0 and abs(b) < 14.0 and abs(a) < 12.0:
             return BC_CUE, False
         if L <= 70.0:
             return BC_BLACK, False
+        if b > 18.0 and L > 120.0:
+            return BC_YELLOW, is_stripe
     return best_id, is_stripe
 
 
@@ -438,6 +458,8 @@ def main() -> int:
     test_vote_and_lock()
     test_felt_vs_green()
     test_illumination_shift()
+    test_washed_yellow_not_cue()
+    test_true_cue_still_cue()
     print()
     if failures:
         print(f"RESULT: {len(failures)} failure(s)")
