@@ -379,7 +379,32 @@ def test_felt_vs_green() -> None:
     check(NAMES[bc] == "GREEN", f"green-on-felt -> {NAMES[bc]} H={samp.hsv[0]} S={samp.hsv[1]}")
 
 
-def test_illumination_shift() -> None:
+def test_washed_yellow_not_cue() -> None:
+    print("\n[7] Washed / bright yellow must not become CUE")
+    # Simulate overexposed yellow: high V, moderate S, strong Lab b*
+    cases = [
+        ("pale yellow", (60, 210, 250)),   # BGR-ish bright yellow
+        ("hot yellow", (40, 230, 255)),
+        ("cream yellow", (90, 200, 240)),
+    ]
+    for name, bgr in cases:
+        img = np.full((48, 48, 3), bgr, dtype=np.uint8)
+        cv2.circle(img, (24, 24), 6, (255, 255, 255), -1)  # specular
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+        samp = sample_ball_color(hsv, lab, 24, 24, 20, 55.0, False)
+        bc, _ = classify_color_sample(samp)
+        check(NAMES[bc] == "YELLOW", f"{name} -> {NAMES[bc]} (H={samp.hsv[0]} S={samp.hsv[1]} b*={samp.lab[2]-128:.0f})")
+
+
+def test_true_cue_still_cue() -> None:
+    print("\n[8] True white cue stays CUE")
+    img = np.full((48, 48, 3), (245, 245, 245), dtype=np.uint8)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+    samp = sample_ball_color(hsv, lab, 24, 24, 18, 55.0, False)
+    bc, _ = classify_color_sample(samp)
+    check(NAMES[bc] == "CUE", f"white cue -> {NAMES[bc]}")
     print("\n[6] Warm illumination still separates YELLOW vs ORANGE")
     for name, bgr in (("YELLOW", (40, 220, 255)), ("ORANGE", (30, 140, 255))):
         img = np.full((64, 64, 3), bgr, dtype=np.uint8)

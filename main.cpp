@@ -229,8 +229,8 @@ static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
             const Vec3b &hv = ph[x];
             int H = hv[0], S = hv[1], V = hv[2];
 
-            /* Specular glint on shiny balls → washes every colour toward white. */
-            if (V >= 230 && S <= 50) { ++nWhite; continue; }
+            /* Specular glint — true glare only (not pale yellow). */
+            if (V >= 235 && S <= 35) { ++nWhite; continue; }
             /* Deep shadow / number pit. */
             if (V <= 28) { ++nDark; continue; }
 
@@ -240,12 +240,16 @@ static ColorSample sampleBallColor(const cv::Mat &hsv, const cv::Mat &lab,
                 continue;   /* felt bleed at the rim */
             }
 
-            if (S <= 55 && V >= 155) ++nWhite;
-            else if (V <= 55)        ++nDark;
-            if (S >= 70 && V >= 55)  ++nChroma;
+            /* Don't count yellow-ish pale pixels as "white band". */
+            bool yellowishPx = (H >= 14 && H <= 42 && S >= 25);
+            if (S <= 45 && V >= 170 && !yellowishPx) ++nWhite;
+            else if (V <= 55)                        ++nDark;
+            if (S >= 55 && V >= 55)                   ++nChroma;
 
-            /* Keep mid-tone chromatic + dark solids; skip near-white for mean hue. */
-            if (S < 35 && V > 170) continue;
+            /* Skip only near-neutral highlights for the colour median.
+               Keep pale yellow (has hue + some sat) so yellow ≠ cue. */
+            if (S < 22 && V > 190) continue;
+            if (S < 30 && V > 210 && !yellowishPx) continue;
 
             const Vec3b &lv = pl[x];
             Hs.push_back((float)H);
@@ -324,14 +328,33 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
     const float b = s.lab[2] - 128.f;
     const int H = s.hsv[0], S = s.hsv[1], V = s.hsv[2];
 
-    /* Cue / black first — chroma + value dominate over hue. */
-    if (s.chroma < 18.f && L >= 155.f && S <= 70) return BC_CUE;
-    if (s.whiteFrac > 0.55f && s.chromaFrac < 0.20f && L >= 140.f) return BC_CUE;
+    /* Strong yellow signal in Lab b* / hue — never call this the cue ball. */
+    const bool yellowSignal =
+        (b > 20.f && L > 110.f && s.chroma >= 14.f) ||
+        (S >= 35 && H >= 14 && H <= 42 && V >= 90) ||
+        (S >= 28 && H >= 18 && H <= 38 && b > 15.f);
+
+    /* Cue must be near-neutral in Lab — strict gates so washed yellow ≠ white. */
+    if (!yellowSignal) {
+        if (s.chroma < 12.f && L >= 160.f && S <= 42 &&
+            std::fabs(a) < 14.f && std::fabs(b) < 16.f)
+            return BC_CUE;
+        if (s.whiteFrac > 0.62f && s.chromaFrac < 0.12f && L >= 155.f &&
+            s.chroma < 12.f && std::fabs(b) < 16.f)
+            return BC_CUE;
+    }
+
     if (L <= 55.f && s.chroma < 22.f) return BC_BLACK;
-    if (V <= 70 && S <= 90 && s.chroma < 28.f) return BC_BLACK;
+    if (V <= 70 && S <= 90 && s.chroma < 28.f && !yellowSignal) return BC_BLACK;
 
     /* Stripe: notable white band + chromatic body. */
     isStripe = (s.whiteFrac >= 0.16f && s.chromaFrac >= 0.22f && s.chroma > 20.f);
+
+    /* Early yellow commit when Lab/HSV clearly say yellow. */
+    if (yellowSignal && b > 18.f) {
+        if (!(H < 16 && a > 30.f && b < 45.f))
+            return BC_YELLOW;
+    }
 
     struct Proto { BallColor id; float aa, bb, L; float h; };
     /* Tuned for typical billiard plastics under warm room light. */
@@ -353,11 +376,13 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
         /* Soft HSV vote — helps orange/yellow and red/maroon under weird WB. */
         float cost = dLab + 0.35f * dH * dH;
         if (S < 50) cost += 80.f;   /* desaturated → less trust in hue protos */
+        /* Prefer yellow proto when Lab b* is elevated. */
+        if (p.id == BC_YELLOW && b > 25.f) cost *= 0.55f;
         if (cost < best) { best = cost; bestId = p.id; }
     }
 
     /* HSV hard overrides when Lab is ambiguous near warm hues. */
-    if (S >= 70 && V >= 60) {
+    if (S >= 45 && V >= 60) {
         if (H <= 6 || H >= 170) {
             if (V < 100 || L < 95.f) bestId = BC_MAROON;
             else bestId = BC_RED;
@@ -366,10 +391,11 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
             bestId = BC_ORANGE;
             /* Only very high-L + low a* at the yellow edge → yellow. */
             if (H >= 15 && L > 190.f && a < 18.f) bestId = BC_YELLOW;
+            if (b > 35.f && a < 25.f) bestId = BC_YELLOW;
         } else if (H < 24) {
             /* Yellow/orange border — Lab a* separates them. */
             bestId = (a > 28.f || L < 155.f) ? BC_ORANGE : BC_YELLOW;
-        } else if (H < 38) {
+        } else if (H < 42) {
             bestId = BC_YELLOW;
         } else if (H < 88) {
             bestId = BC_GREEN;
@@ -378,11 +404,16 @@ static BallColor classifyColorSample(const ColorSample &s, bool &isStripe)
         } else if (H < 165) {
             bestId = BC_PURPLE;
         }
+    } else if (yellowSignal) {
+        bestId = BC_YELLOW;
     }
 
-    if (bestId == BC_UNKNOWN && S < 55) {
-        if (L >= 150.f) return BC_CUE;
-        if (L <= 70.f)  return BC_BLACK;
+    /* Desaturated leftovers: cue only if Lab is truly neutral (not yellow). */
+    if (bestId == BC_UNKNOWN && S < 50) {
+        if (L >= 155.f && s.chroma < 12.f && std::fabs(b) < 14.f && std::fabs(a) < 12.f)
+            return BC_CUE;
+        if (L <= 70.f) return BC_BLACK;
+        if (b > 18.f && L > 120.f) return BC_YELLOW;
     }
     return bestId;
 }
@@ -686,7 +717,7 @@ void PoolEngine::detectBalls(const cv::Mat &hsv, const cv::Mat &lab,
     using namespace cv;
     Mat white, colored, dark, m;
     /* Slightly looser white / tighter dark so cue & 8-ball survive WB. */
-    inRange(hsv, Scalar(0,   0, 155), Scalar(180,  80, 255), white);  // cue ball
+    inRange(hsv, Scalar(0,   0, 165), Scalar(180,  55, 255), white);  // cue — tighter sat
     inRange(hsv, Scalar(0,  70,  55), Scalar(180, 255, 255), colored);// object balls
     inRange(hsv, Scalar(0,   0,  10), Scalar(180, 180,  85), dark);   // 8-ball
     m = white | colored | dark;
@@ -855,6 +886,14 @@ void PoolEngine::updateTracks(Analysis &A, cv::Point2f shift)
         }
 
         tk.isCue = (tk.label == "CUE");
+        /* If a lock says CUE but Lab b* still looks yellow, break the lock. */
+        if (tk.isCue && (tk.bE - 128.f) > 22.f && tk.sE >= 28.f) {
+            tk.lockedLabel.clear();
+            tk.lockHits = 0;
+            tk.label = "YELLOW";
+            tk.isCue = false;
+            tk.bgr = ballColorBgr(BC_YELLOW);
+        }
         tk.isStripe = (tk.label.find("/s") != std::string::npos);
         /* Paint from locked/voted name. */
         {

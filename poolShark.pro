@@ -20,9 +20,9 @@ isEmpty(OPENCV_DIR) {
         LIBS += -L$$OPENCV_DIR/x64/vc15/lib
         LIBS += -L$$OPENCV_DIR/lib
         CONFIG(debug, debug|release) {
-            LIBS += -lopencv_world412d
+            LIBS += -lopencv_world4120d
         } else {
-            LIBS += -lopencv_world412
+            LIBS += -lopencv_world4120
         }
         # Fallback names if world lib version differs — uncomment/adjust:
         # LIBS += -lopencv_core -lopencv_imgproc -lopencv_video -lopencv_videoio
