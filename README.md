@@ -7,13 +7,13 @@ Built with **Qt 5.12** and **OpenCV 4** (C++14).
 
 Ball colours are no longer a single HSV average. The pipeline now:
 
-1. **Illumination correction** — mild felt-based white balance + CLAHE on Lab `L`
+1. **Illumination correction** — CLAHE on Lab `L` (felt is not used as a gray reference; that pushed warm cues toward red/orange)
 2. **Robust sampling** — annular interior mask; drops specular glints, deep shadows, and felt bleed at the rim; uses medians (hue-wrap aware)
 3. **Lab + HSV prototypes** — nearest Lab `a*b*` prototype with HSV tie-breaks for warm hues (yellow/orange/red/maroon)
 4. **Stripe detection** — white-band fraction → labels like `YELLOW/s`
 5. **Temporal lock** — majority vote over ~9 frames, then lock until sustained disagreement
 6. **Pairwise disambiguation + lock breakers** — corrects sticky cue/yellow, orange/yellow, red/maroon, blue/purple, black/maroon, and weak green/felt mix-ups
-7. **Table-only detection** — ball centres must sit on the felt interior (ignores wall racks, rails, pens/sticks); Hough is stricter and rejects felt-texture / purple-cast ghosts
+7. **Table-only detection** — the felt outline is the convex playing surface, so a dim or cyan-shifted side (camera on a screen) does not leave a hole. Ball centres must sit on that surface (wall racks, rails, pens/sticks stay out). Hough is strict and rejects felt-texture / purple-cast ghosts
 8. **Warm-light cue** — cream cue under tungsten/LED stays `CUE` instead of red/orange/yellow
 9. **Extra detection** — Lab distance from felt + Hough circles so green balls are not lost in the cloth
 
